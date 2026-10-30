@@ -1,0 +1,4 @@
+{
+  "otpauthUri": "otpauth://totp/Notion:team@example.com?secret=JBSWY3DPEHPK3PXP&issuer=Notion&algorithm=SHA1&digits=6&period=30",
+  "migrationUri": "otpauth-migration://offline?data=CjAKCgECAwQFBgcICQoSFG1pZ3JhdGVkQGV4YW1wbGUuY29tGgZHaXRIdWIgASgBMAIKLgoICwwNDg8QERISEWFkbWluQGV4YW1wbGUuY29tGglNaWNyb3NvZnQgAigCMAIKHwoEFRYXGBILbGVnYWN5LWJhbmsaBEJhbmsgASgBMAEQARgDIAAohqQ8"
+}

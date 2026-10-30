@@ -1,0 +1,445 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>RUNNING</title>
+<style>
+  body { font-family: ui-monospace, Menlo, monospace; padding: 20px; font-size: 13px; background: #f7f7fb; color: #171827; }
+  h1 { font-size: 16px; }
+  .pass { color: #087f5b; }
+  .fail { color: #c92a2a; white-space: pre-wrap; }
+  .summary { margin: 12px 0; font-weight: 700; font-size: 15px; }
+</style>
+</head>
+<body>
+<h1>RFC 6238 / parser tests</h1>
+<div id="summary" class="summary">RUNNING</div>
+<div id="results"></div>
+<script type="module">
+import { encodeBase32, decodeBase32 } from '../src/lib/base32.js';
+import { generateTOTP, formatCode, getSecondsRemaining, getStep } from '../src/lib/totp.js';
+import { parseOtpAuthUri } from '../src/lib/otpauth.js';
+import { decodeMigrationUri } from '../src/lib/migration.js';
+import { normalizeAccount, mergeAccounts, accountFingerprint } from '../src/lib/accounts.js';
+import { fillOtpField } from '../src/lib/autofill.js';
+import { loadAccounts, saveAccounts, clearAccounts, isPreview } from '../src/lib/storage.js';
+
+const results = [];
+const failures = [];
+
+function assert(condition, message) {
+  if (!condition) throw new Error(message || 'Assertion failed');
+}
+
+function assertEqual(actual, expected, message) {
+  if (actual !== expected) {
+    throw new Error(`${message || 'Expected equality'}\n  expected: ${JSON.stringify(expected)}\n  actual:   ${JSON.stringify(actual)}`);
+  }
+}
+
+function assertThrows(fn, pattern, message) {
+  let error = null;
+  try { fn(); } catch (caught) { error = caught; }
+  assert(error, message || 'Expected function to throw');
+  if (pattern) {
+    assert(pattern.test(error.message), `${message || 'Unexpected error'}: ${error.message}`);
+  }
+}
+
+async function test(name, fn) {
+  try {
+    await fn();
+    results.push({ name, ok: true });
+    console.log('PASS', name);
+  } catch (error) {
+    results.push({ name, ok: false, error: error.stack || String(error) });
+    failures.push(name);
+    console.error('FAIL', name, error);
+  }
+}
+
+function concatBytes(...arrays) {
+  const total = arrays.reduce((sum, array) => sum + array.length, 0);
+  const output = new Uint8Array(total);
+  let offset = 0;
+  for (const array of arrays) {
+    output.set(array, offset);
+    offset += array.length;
+  }
+  return output;
+}
+
+function varintBytes(value) {
+  const bytes = [];
+  let remaining = value;
+  while (remaining > 127) {
+    bytes.push((remaining % 128) | 0x80);
+    remaining = Math.floor(remaining / 128);
+  }
+  bytes.push(remaining);
+  return Uint8Array.from(bytes);
+}
+
+function lengthField(fieldNumber, bytes) {
+  return concatBytes(varintBytes(fieldNumber * 8 + 2), varintBytes(bytes.length), bytes);
+}
+
+function intField(fieldNumber, value) {
+  return concatBytes(varintBytes(fieldNumber * 8), varintBytes(value));
+}
+
+function utf8(value) {
+  return new TextEncoder().encode(value);
+}
+
+function buildOtpParameters({ secret, name = '', issuer = '', algorithm = 1, digits = 1, type = 2 }) {
+  return concatBytes(
+    lengthField(1, new Uint8Array(secret)),
+    lengthField(2, utf8(name)),
+    lengthField(3, utf8(issuer)),
+    intField(4, algorithm),
+    intField(5, digits),
+    intField(6, type),
+  );
+}
+
+function buildMigrationPayload(parameterMessages) {
+  return concatBytes(
+    ...parameterMessages.map((message) => lengthField(1, message)),
+    intField(2, 1),
+    intField(3, parameterMessages.length),
+    intField(4, 0),
+    intField(5, 123456),
+  );
+}
+
+function base64Url(bytes) {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+const RFC_SHA1_SECRET = '12345678901234567890';
+const RFC_SHA256_SECRET = '12345678901234567890123456789012';
+const RFC_SHA512_SECRET = '1234567890123456789012345678901234567890123456789012345678901234';
+
+await test('Base32 decodes RFC test secret', () => {
+  const decoded = new TextDecoder().decode(decodeBase32('GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ'));
+  assertEqual(decoded, RFC_SHA1_SECRET, 'SHA1 secret mismatch');
+});
+
+await test('Base32 tolerates spaces, lowercase and padding', () => {
+  const decoded = new TextDecoder().decode(decodeBase32('gezd gnbv gy3t qojq gezd gnbv gy3t qojq===='));
+  assertEqual(decoded, RFC_SHA1_SECRET);
+});
+
+await test('Base32 round trips arbitrary bytes', () => {
+  const bytes = Uint8Array.from([0, 1, 2, 3, 4, 250, 251, 252, 253, 254, 255]);
+  const encoded = encodeBase32(bytes);
+  assertEqual(Array.from(decodeBase32(encoded)).join(','), Array.from(bytes).join(','));
+});
+
+await test('Base32 rejects invalid characters', () => {
+  assertThrows(() => decodeBase32('JBSWY3DPEHPK3PX1'), /Base32/);
+});
+
+const sha1Secret = encodeBase32(utf8(RFC_SHA1_SECRET));
+const sha1Vectors = [
+  [59, '94287082'],
+  [1111111109, '07081804'],
+  [1111111111, '14050471'],
+  [1234567890, '89005924'],
+  [2000000000, '69279037'],
+  [20000000000, '65353130'],
+];
+
+await test('TOTP SHA-1 matches RFC 6238 vectors', async () => {
+  for (const [seconds, expected] of sha1Vectors) {
+    const code = await generateTOTP({
+      secret: sha1Secret,
+      algorithm: 'SHA1',
+      digits: 8,
+      period: 30,
+      timestamp: seconds * 1000,
+    });
+    assertEqual(code, expected, `SHA1 vector @${seconds}`);
+  }
+});
+
+const sha256Secret = encodeBase32(utf8(RFC_SHA256_SECRET));
+const sha256Vectors = [
+  [59, '46119246'],
+  [1111111109, '68084774'],
+  [1111111111, '67062674'],
+  [1234567890, '91819424'],
+  [2000000000, '90698825'],
+  [20000000000, '77737706'],
+];
+
+await test('TOTP SHA-256 matches RFC 6238 vectors', async () => {
+  for (const [seconds, expected] of sha256Vectors) {
+    const code = await generateTOTP({
+      secret: sha256Secret,
+      algorithm: 'SHA256',
+      digits: 8,
+      period: 30,
+      timestamp: seconds * 1000,
+    });
+    assertEqual(code, expected, `SHA256 vector @${seconds}`);
+  }
+});
+
+const sha512Secret = encodeBase32(utf8(RFC_SHA512_SECRET));
+const sha512Vectors = [
+  [59, '90693936'],
+  [1111111109, '25091201'],
+  [1111111111, '99943326'],
+  [1234567890, '93441116'],
+  [2000000000, '38618901'],
+  [20000000000, '47863826'],
+];
+
+await test('TOTP SHA-512 matches RFC 6238 vectors', async () => {
+  for (const [seconds, expected] of sha512Vectors) {
+    const code = await generateTOTP({
+      secret: sha512Secret,
+      algorithm: 'SHA512',
+      digits: 8,
+      period: 30,
+      timestamp: seconds * 1000,
+    });
+    assertEqual(code, expected, `SHA512 vector @${seconds}`);
+  }
+});
+
+await test('TOTP code has requested digit count and padding', async () => {
+  const code = await generateTOTP({
+    secret: sha1Secret,
+    digits: 6,
+    period: 30,
+    timestamp: 59 * 1000,
+  });
+  assertEqual(code.length, 6);
+  assertEqual(code, '287082');
+});
+
+await test('Countdown reports full window at boundary', () => {
+  assertEqual(getSecondsRemaining(30, 30 * 1000), 30);
+  assertEqual(getSecondsRemaining(30, 31 * 1000), 29);
+  assertEqual(getSecondsRemaining(30, 59 * 1000 + 999), 1);
+  assertEqual(getStep(30, 59 * 1000 + 999), 1);
+});
+
+await test('formatCode groups digits', () => {
+  assertEqual(formatCode('123456', 6), '123 456');
+  assertEqual(formatCode('12345678', 8), '1234 5678');
+});
+
+await test('otpauth URI parses issuer, label and options', () => {
+  const account = parseOtpAuthUri(
+    'otpauth://totp/GitHub:alex@example.com?secret=JBSWY3DPEHPK3PXP&issuer=GitHub&algorithm=SHA256&digits=8&period=60',
+  );
+  assertEqual(account.issuer, 'GitHub');
+  assertEqual(account.name, 'alex@example.com');
+  assertEqual(account.secret, 'JBSWY3DPEHPK3PXP');
+  assertEqual(account.algorithm, 'SHA256');
+  assertEqual(account.digits, 8);
+  assertEqual(account.period, 60);
+});
+
+await test('otpauth URI falls back to issuer and defaults', () => {
+  const account = parseOtpAuthUri('otpauth://totp/Example?secret=JBSWY3DPEHPK3PXP');
+  assertEqual(account.issuer, '');
+  assertEqual(account.name, 'Example');
+  assertEqual(account.algorithm, 'SHA1');
+  assertEqual(account.digits, 6);
+  assertEqual(account.period, 30);
+});
+
+await test('otpauth URI rejects HOTP and broken secrets', () => {
+  assertThrows(() => parseOtpAuthUri('otpauth://hotp/Example?secret=JBSWY3DPEHPK3PXP&counter=1'), /HOTP/);
+  assertThrows(() => parseOtpAuthUri('otpauth://totp/Example?secret=!!!!'), /Base32/);
+  assertThrows(() => parseOtpAuthUri('otpauth://totp/Example?secret=JBSWY3DPEHPK3PXP&digits=5'), /6/);
+});
+
+await test('Google Authenticator migration payload imports accounts', () => {
+  const secret = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+  const payload = buildMigrationPayload([
+    buildOtpParameters({ secret, name: 'alex@example.com', issuer: 'GitHub' }),
+    buildOtpParameters({ secret: [11, 12, 13, 14, 15, 16], name: 'work', issuer: 'AWS', algorithm: 3, digits: 2 }),
+    buildOtpParameters({ secret: [21, 22, 23], name: 'legacy', issuer: 'Bank', type: 1 }),
+  ]);
+  const uri = `otpauth-migration://offline?data=${base64Url(payload)}`;
+  const result = decodeMigrationUri(uri);
+  assertEqual(result.accounts.length, 2, 'Should import two TOTP accounts');
+  assertEqual(result.skipped, 1, 'Should skip the HOTP account');
+  assertEqual(result.accounts[0].secret, encodeBase32(Uint8Array.from(secret)));
+  assertEqual(result.accounts[0].issuer, 'GitHub');
+  assertEqual(result.accounts[0].name, 'alex@example.com');
+  assertEqual(result.accounts[1].algorithm, 'SHA512');
+  assertEqual(result.accounts[1].digits, 8);
+  assertEqual(result.accounts[1].period, 30);
+});
+
+await test('Google migration rejects unsupported MD5 algorithm', () => {
+  const payload = buildMigrationPayload([
+    buildOtpParameters({ secret: [1, 2, 3, 4], name: 'md5', issuer: 'Old', algorithm: 4 }),
+  ]);
+  const uri = `otpauth-migration://offline?data=${base64Url(payload)}`;
+  assertThrows(() => decodeMigrationUri(uri), /不支持/);
+});
+
+await test('Account normalization and duplicate merge', () => {
+  const first = normalizeAccount({
+    issuer: 'GitHub',
+    name: 'alex',
+    secret: 'JBSWY3DPEHPK3PXP',
+    algorithm: 'SHA1',
+    digits: 6,
+    period: 30,
+  }, { keepId: false });
+  const second = normalizeAccount({
+    issuer: 'GitHub',
+    name: 'alex@example.com',
+    secret: 'jbswy3dpehpk3pxp',
+    algorithm: 'SHA-1',
+    digits: 6,
+    period: 30,
+  }, { keepId: false });
+  const merged = mergeAccounts([first], [second]);
+  assertEqual(merged.added.length, 0);
+  assertEqual(merged.skipped, 1);
+  assertEqual(merged.accounts.length, 1);
+  assertEqual(accountFingerprint(first), accountFingerprint(second));
+});
+
+await test('Account normalization rejects bad period', () => {
+  assertThrows(() => normalizeAccount({
+    name: 'bad',
+    secret: 'JBSWY3DPEHPK3PXP',
+    period: 0,
+  }), /周期/);
+});
+
+await test('Autofill targets visible one-time-code input', () => {
+  const host = document.createElement('div');
+  host.style.cssText = 'position:fixed;left:0;top:0;width:320px;padding:10px;background:#fff;z-index:9999';
+  const search = document.createElement('input');
+  search.name = 'search';
+  search.style.cssText = 'width:200px;height:30px';
+  const otp = document.createElement('input');
+  otp.setAttribute('autocomplete', 'one-time-code');
+  otp.style.cssText = 'width:200px;height:30px';
+  host.append(search, otp);
+  document.body.append(host);
+  let inputEvents = 0;
+  otp.addEventListener('input', () => { inputEvents += 1; });
+  const filled = fillOtpField('123 456');
+  assertEqual(filled, true, 'Should find the OTP field');
+  assertEqual(otp.value, '123456', 'Should write raw digits');
+  assertEqual(search.value, '', 'Should not touch search fields');
+  assertEqual(inputEvents, 1, 'Should dispatch a single input event');
+  host.remove();
+});
+
+await test('Autofill refuses pages without an OTP field', () => {
+  const host = document.createElement('div');
+  host.style.cssText = 'position:fixed;left:0;top:0;width:320px;padding:10px;background:#fff;z-index:9999';
+  const username = document.createElement('input');
+  username.name = 'username';
+  username.style.cssText = 'width:200px;height:30px';
+  const password = document.createElement('input');
+  password.type = 'password';
+  password.name = 'otp';
+  password.style.cssText = 'width:200px;height:30px';
+  host.append(username, password);
+  document.body.append(host);
+  assertEqual(fillOtpField('123456'), false);
+  assertEqual(username.value, '');
+  assertEqual(password.value, '');
+  host.remove();
+});
+
+await test('Autofill matches Chinese verification labels', () => {
+  const host = document.createElement('div');
+  host.style.cssText = 'position:fixed;left:0;top:0;width:320px;padding:10px;background:#fff;z-index:9999';
+  const input = document.createElement('input');
+  input.placeholder = '请输入验证码';
+  input.style.cssText = 'width:200px;height:30px';
+  host.append(input);
+  document.body.append(host);
+  assertEqual(fillOtpField('987654'), true);
+  assertEqual(input.value, '987654');
+  host.remove();
+});
+
+await test('Extension storage round-trip uses chrome.storage.local', async () => {
+  const store = new Map();
+  const previousChrome = globalThis.chrome;
+  const clone = (value) => JSON.parse(JSON.stringify(value));
+  globalThis.chrome = {
+    storage: {
+      local: {
+        async get(key) {
+          return store.has(key) ? { [key]: clone(store.get(key)) } : {};
+        },
+        async set(items) {
+          for (const [key, value] of Object.entries(items)) {
+            store.set(key, clone(value));
+          }
+        },
+        async remove(key) {
+          store.delete(key);
+        },
+      },
+    },
+  };
+
+  try {
+    assertEqual(isPreview(), false, 'Should detect extension storage');
+    await saveAccounts([{
+      id: 'storage-test',
+      issuer: 'GitHub',
+      name: 'alex',
+      secret: 'JBSWY3DPEHPK3PXP',
+      algorithm: 'SHA1',
+      digits: 6,
+      period: 30,
+    }]);
+    const stored = store.get('totp_accounts_v1');
+    assertEqual(stored.length, 1, 'Should persist under the versioned key');
+    const loaded = await loadAccounts();
+    assertEqual(loaded.length, 1);
+    assertEqual(loaded[0].issuer, 'GitHub');
+    assertEqual(loaded[0].secret, 'JBSWY3DPEHPK3PXP');
+
+    store.set('totp_accounts_v1', [{ name: 'broken' }, null, 'garbage']);
+    assertEqual((await loadAccounts()).length, 0, 'Should ignore corrupted entries');
+
+    await clearAccounts();
+    assertEqual((await loadAccounts()).length, 0);
+  } finally {
+    if (previousChrome === undefined) {
+      delete globalThis.chrome;
+    } else {
+      globalThis.chrome = previousChrome;
+    }
+  }
+});
+
+const summary = document.getElementById('summary');
+const container = document.getElementById('results');
+const passed = results.filter((result) => result.ok).length;
+const failed = results.length - passed;
+summary.textContent = failed === 0 ? `PASS ${passed}/${results.length}` : `FAIL ${failed}/${results.length}`;
+summary.className = `summary ${failed === 0 ? 'pass' : 'fail'}`;
+container.innerHTML = results.map((result) => (
+  result.ok
+    ? `<div class="pass">PASS ${result.name}</div>`
+    : `<div class="fail">FAIL ${result.name}<br>${String(result.error).replace(/[<>]/g, '')}</div>`
+)).join('');
+document.title = failed === 0 ? 'ALL_TESTS_PASSED' : 'TESTS_FAILED';
+window.__TESTS_DONE__ = true;
+</script>
+</body>
+</html>

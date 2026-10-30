@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TOTP 身份验证器</title>
+  <link rel="stylesheet" href="src/popup.css">
+</head>
+<body>
+  <svg xmlns="http://www.w3.org/2000/svg" class="sprite" aria-hidden="true">
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 8.98 19.4a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.6 8.98a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 8.96 4.6 1.7 1.7 0 0 0 10 3.04V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.13.4.44.74.83.94.25.13.53.2.82.2H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1.03Z"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+    <symbol id="i-qr" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM20 14h1M14 20h3M20 17v4"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></symbol>
+    <symbol id="i-fill" viewBox="0 0 24 24"><path d="M4 20h16M6 16l8.5-8.5a2.1 2.1 0 0 1 3 3L9 19H6v-3Z"/><path d="m13 7 4 4"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v5M14 11v5"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M4 20h16"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5M4 20h16"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 4.5 6v5.5c0 4.6 3.2 8 7.5 9.5 4.3-1.5 7.5-4.9 7.5-9.5V6L12 3Z"/><path d="m9 12 2 2 4-4"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m11 12 8-8M16 7l3 3M18 5l2 2"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8l-5-5Z"/><path d="M14 3v5h5"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+  </svg>
+
+  <div id="app">
+    <header class="app-header">
+      <div class="brand">
+        <img class="brand-mark" src="icons/icon48.png" width="36" height="36" alt="">
+        <div class="brand-text">
+          <h1>身份验证器</h1>
+          <p>TOTP · 离线安全</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button type="button" id="addBtn" class="icon-btn accent" title="添加账户" aria-label="添加账户">
+          <svg><use href="#i-plus"></use></svg>
+        </button>
+        <button type="button" id="settingsBtn" class="icon-btn" title="设置" aria-label="设置">
+          <svg><use href="#i-gear"></use></svg>
+        </button>
+      </div>
+    </header>
+
+    <main id="main">
+      <section id="listView" class="view list-view" aria-label="账户列表">
+        <div class="search-row" id="searchWrap" hidden>
+          <div class="search-field">
+            <svg class="search-icon"><use href="#i-search"></use></svg>
+            <input id="searchInput" type="search" placeholder="搜索服务或账户" autocomplete="off" spellcheck="false" aria-label="搜索账户">
+          </div>
+        </div>
+        <div id="accountList" class="account-list"></div>
+        <div id="emptyState" class="empty-state" hidden>
+          <div class="empty-art">
+            <svg><use href="#i-shield"></use></svg>
+          </div>
+          <h2>还没有账户</h2>
+          <p>扫码或手动输入密钥，添加你的第一个双因素验证账户。</p>
+          <button type="button" class="btn primary" data-action="open-add">添加账户</button>
+          <p class="empty-note"><svg><use href="#i-lock"></use></svg>所有密钥仅存储在本机</p>
+        </div>
+      </section>
+
+      <section id="formView" class="view panel" hidden aria-label="添加或编辑账户">
+        <div class="subhead">
+          <button type="button" class="icon-btn back-btn" data-back title="返回" aria-label="返回">
+            <svg><use href="#i-back"></use></svg>
+          </button>
+          <h2 id="formTitle">添加账户</h2>
+        </div>
+        <div class="panel-scroll">
+          <div class="segmented" id="formTabs" role="tablist" aria-label="添加方式">
+            <button type="button" class="seg active" data-tab="scan" role="tab" aria-selected="true">扫码导入</button>
+            <button type="button" class="seg" data-tab="manual" role="tab" aria-selected="false">手动输入</button>
+          </div>
+
+          <div id="scanPanel" class="tab-panel">
+            <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="选择二维码图片">
+              <span class="spinner" aria-hidden="true"></span>
+              <div class="dz-icon"><svg><use href="#i-qr"></use></svg></div>
+              <p class="dz-title">点击选择二维码图片</p>
+              <p class="dz-sub">也可以拖入图片，或直接粘贴截图</p>
+            </div>
+            <input id="qrFile" type="file" accept="image/*" hidden>
+            <div class="divider"><span>或粘贴链接</span></div>
+            <textarea id="uriInput" class="uri-input" rows="2" placeholder="otpauth://totp/... 或 Google Authenticator 迁移链接" spellcheck="false" aria-label="otpauth 链接"></textarea>
+            <button type="button" id="uriImportBtn" class="btn ghost full">解析并导入</button>
+            <p class="hint">支持二维码图片、otpauth 链接和 Google Authenticator 导出的迁移二维码。</p>
+          </div>
+
+          <div id="manualPanel" class="tab-panel" hidden>
+            <form id="accountForm" novalidate>
+              <label class="field">
+                <span class="field-label">服务名称 <span class="optional">可选</span></span>
+                <input id="fieldIssuer" name="issuer" type="text" maxlength="120" placeholder="例如 GitHub" autocomplete="off">
+              </label>
+              <label class="field">
+                <span class="field-label">账户 / 备注 <span class="optional">可选</span></span>
+                <input id="fieldName" name="name" type="text" maxlength="120" placeholder="例如 alex@example.com" autocomplete="off">
+              </label>
+              <label class="field">
+                <span class="field-label">密钥 <span class="required">*</span></span>
+                <input id="fieldSecret" name="secret" class="mono uppercase" type="text" placeholder="例如 JBSWY3DPEHPK3PXP" autocomplete="off" spellcheck="false">
+                <span class="field-error" id="secretError" hidden></span>
+              </label>
+
+              <details class="advanced" id="advanced">
+                <summary>高级选项 <span class="summary-note">通常无需修改</span></summary>
+                <div class="advanced-grid">
+                  <label class="field">
+                    <span class="field-label">算法</span>
+                    <select id="fieldAlgorithm">
+                      <option value="SHA1">SHA-1</option>
+                      <option value="SHA256">SHA-256</option>
+                      <option value="SHA512">SHA-512</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span class="field-label">位数</span>
+                    <select id="fieldDigits">
+                      <option value="6">6 位</option>
+                      <option value="7">7 位</option>
+                      <option value="8">8 位</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span class="field-label">周期（秒）</span>
+                    <input id="fieldPeriod" type="number" min="1" max="600" step="1" value="30" inputmode="numeric">
+                  </label>
+                </div>
+              </details>
+
+              <p id="formError" class="form-error" role="alert" hidden></p>
+              <button type="submit" id="formSubmit" class="btn primary full">添加账户</button>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <section id="settingsView" class="view panel" hidden aria-label="设置">
+        <div class="subhead">
+          <button type="button" class="icon-btn back-btn" data-back title="返回" aria-label="返回">
+            <svg><use href="#i-back"></use></svg>
+          </button>
+          <h2>设置</h2>
+        </div>
+        <div class="panel-scroll">
+          <div class="stats-card">
+            <div class="stat-icon"><svg><use href="#i-shield"></use></svg></div>
+            <div>
+              <strong id="settingsCount">0 个账户</strong>
+              <p id="settingsStorage">数据仅保存在本机浏览器</p>
+            </div>
+          </div>
+
+          <section class="settings-section">
+            <h3>备份与迁移</h3>
+            <div class="settings-card">
+              <div class="setting-row">
+                <div>
+                  <div class="setting-name">导出备份</div>
+                  <div class="setting-desc">JSON 文件包含明文密钥，请妥善保管</div>
+                </div>
+                <button type="button" id="exportBtn" class="btn ghost small">
+                  <svg><use href="#i-download"></use></svg>导出
+                </button>
+              </div>
+              <div class="setting-row">
+                <div>
+                  <div class="setting-name">导入备份</div>
+                  <div class="setting-desc">合并导入，自动跳过重复账户</div>
+                </div>
+                <button type="button" id="importBtn" class="btn ghost small">
+                  <svg><use href="#i-upload"></use></svg>导入
+                </button>
+              </div>
+              <input id="importFile" type="file" accept=".json,application/json" hidden>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <h3>隐私与安全</h3>
+            <div class="settings-card security-card">
+              <div class="security-item"><svg><use href="#i-lock"></use></svg><span>扩展不发起任何网络请求，验证码全部在本地计算。</span></div>
+              <div class="security-item"><svg><use href="#i-key"></use></svg><span>密钥保存在浏览器本地存储中，请勿分享导出的备份文件。</span></div>
+              <div class="security-item"><svg><use href="#i-clock"></use></svg><span>验证码按设定周期自动刷新，系统时间偏差会影响验证结果。</span></div>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <h3>危险操作</h3>
+            <div class="settings-card">
+              <div class="setting-row">
+                <div>
+                  <div class="setting-name">清空所有账户</div>
+                  <div class="setting-desc">删除本机全部密钥，且无法恢复</div>
+                </div>
+                <button type="button" id="clearBtn" class="btn ghost small danger-text">清空</button>
+              </div>
+            </div>
+          </section>
+
+          <footer class="about">版本 1.0.0 · 遵循 RFC 6238 · 数据不上传</footer>
+        </div>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <div id="modal" class="modal" hidden>
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+        <div class="modal-icon"><svg><use href="#i-trash"></use></svg></div>
+        <h3 id="modalTitle">删除账户</h3>
+        <p id="modalBody"></p>
+        <div class="modal-actions">
+          <button type="button" id="modalCancel" class="btn ghost">取消</button>
+          <button type="button" id="modalConfirm" class="btn danger-solid">删除</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="contextMenu" class="context-menu" role="menu" hidden>
+    <button type="button" role="menuitem" data-menu-action="copy"><svg><use href="#i-copy"></use></svg>复制验证码</button>
+    <button type="button" role="menuitem" data-menu-action="fill"><svg><use href="#i-fill"></use></svg>填入当前页面</button>
+    <div class="menu-sep" role="separator"></div>
+    <button type="button" role="menuitem" data-menu-action="edit"><svg><use href="#i-edit"></use></svg>编辑账户</button>
+    <button type="button" role="menuitem" class="danger" data-menu-action="delete"><svg><use href="#i-trash"></use></svg>删除账户</button>
+  </div>
+
+  <script src="src/vendor/jsQR.js"></script>
+  <script type="module" src="src/popup.js"></script>
+</body>
+</html>
